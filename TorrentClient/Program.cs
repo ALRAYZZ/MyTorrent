@@ -4,13 +4,14 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using TorrentClient.src.Models;
+using TorrentClient.src.Networking;
 using TorrentClient.src.Parsing;
 
 namespace TorrentClient
 {
     class Program
     {
-        static void Main(string[] args)
+        static async void Main(string[] args)
         {
             if (args.Length != 1)
             {
@@ -49,6 +50,16 @@ namespace TorrentClient
 
                 var torrent = new Torrent(announce, fileName, fileLength, pieceLength, pieceHashes, infoHash);
                 torrent.PrintMetadata();
+
+
+                // Contact tracker to get the peers
+                var trackerClient = new TrackerClient();
+                var peers = await trackerClient.GetPeers(torrent);
+				Console.WriteLine("\nPeers:");
+				foreach (var peer in peers)
+				{
+					Console.WriteLine($"  {peer.ip}:{peer.port}");
+				}
 			}
 			catch (Exception ex)
             {

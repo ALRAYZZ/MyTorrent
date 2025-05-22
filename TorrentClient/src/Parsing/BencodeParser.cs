@@ -14,7 +14,7 @@ namespace TorrentClient.src.Parsing
 	public class BencodeParser
     {
 		private byte[] data;
-		private int index;
+		private int index; // This is the index that we iterate over the byte array since we using while loops to parse the data
 
 		// Stores the byte range of the info dictionary for computing the info hash
 		public (int start, int length)? InfoRange { get; private set; }
@@ -56,9 +56,14 @@ namespace TorrentClient.src.Parsing
 				// Parse the value associated with the key
 				object value = ParseNext();
 
+
+				// Parsing string will iterate untill it hits the ":" character so it will build the whole string
+				// then if the string is "info" we store the range of the info dictionary
+				// We need the range to go back to the raw byte array and compute the info hash
+				// We cannot compute hash of the dictionary directly since it will be different from the original torrent file
 				if (key == "info")
 				{
-					InfoRange = (startIndex, index - startIndex); // Store the range of the info dictionary
+					InfoRange = (startIndex, index - startIndex); // Store the range of the info dictionary so we can compute the info hash later
 				}
 				dict[key] = value;
 			}
@@ -113,6 +118,7 @@ namespace TorrentClient.src.Parsing
 
 			long value = 0;
 			bool negative = false;
+			// Checking for negative sign and then we use the bool variable to keep in memory that is a negative number
 			if (index < data.Length && data[index] == '-')
 			{
 				negative = true;
@@ -200,6 +206,10 @@ namespace TorrentClient.src.Parsing
 				throw new InvalidOperationException("Info dictionary not parsed");
 			}
 			using var sha1 = SHA1.Create();
+			// Here we hash from the byte array using the range we stored when parsing the info dictionary
+			// So its a 3 step proccess: Parse the byte array to understand what contains and search for "info" dictionary
+			// Once found, we store the range of it inside the byte array.
+			// Then we used the range and we apply it in the byte array and hash it
 			return sha1.ComputeHash(data, InfoRange.Value.start, InfoRange.Value.length);
 		}
 	}

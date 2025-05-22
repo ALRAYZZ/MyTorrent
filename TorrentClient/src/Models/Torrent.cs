@@ -24,7 +24,7 @@ namespace TorrentClient.src.Models
 			FileLength = fileLength >= 0 ? fileLength : throw new ArgumentException("File length must be non-negative", nameof(fileLength));
 			PieceLength = pieceLength > 0 ? pieceLength : throw new ArgumentException("Piece length must be positive", nameof(pieceLength));
 
-			PieceHashes = pieceHashes ?? throw new ArgumentNullException(nameof(pieceLength)); ;
+			PieceHashes = pieceHashes ?? throw new ArgumentNullException(nameof(pieceLength));
 			if (pieceHashes.Length % 20 != 0)
 			{
 				throw new ArgumentException("Piece hashes must be a multiple of 20", nameof(pieceHashes));

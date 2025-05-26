@@ -1,10 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace TorrentClient.src.Models
+﻿namespace TorrentClient.src.Models
 {
 	// Represents a torrent's metadata from .torrent files
 	public class Torrent

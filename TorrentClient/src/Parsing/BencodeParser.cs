@@ -1,19 +1,12 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Linq;
-using System.Reflection;
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
-using System.Threading.Tasks;
-using System.Threading.Tasks.Dataflow;
 
 namespace TorrentClient.src.Parsing
 {
 	// Parses Bencode data from .torrent files
 	public class BencodeParser
     {
-		private byte[] data;
+		private byte[] data = Array.Empty<byte>();
 		private int index; // This is the index that we iterate over the byte array since we using while loops to parse the data
 
 		// Stores the byte range of the info dictionary for computing the info hash

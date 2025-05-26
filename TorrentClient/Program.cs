@@ -1,8 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿using System.Text;
 using TorrentClient.src.Models;
 using TorrentClient.src.Networking;
 using TorrentClient.src.Parsing;
@@ -11,7 +7,7 @@ namespace TorrentClient
 {
     class Program
     {
-        static async void Main(string[] args)
+        static async Task Main(string[] args)
         {
             if (args.Length != 1)
             {
@@ -21,18 +17,18 @@ namespace TorrentClient
 
             try
             {
-                // Read .torrent file bytes
-                byte[] torrentData = File.ReadAllBytes(args[0]);
-                var parser = new BencodeParser();
-                var torrentDict = parser.Parse(torrentData);
+				// Read .torrent file bytes on local filesystem
+				byte[] torrentData = File.ReadAllBytes(args[0]);
+                var parser = new BencodeParser(); // Create an instance of the BencodeParser to parse the torrent file
+				var torrentDict = parser.Parse(torrentData); // Since the torrent metadata is encoded in Bencode format, we need to parse it first
 
 				// Extract metadata and create Torrent object
-                if (!torrentDict.ContainsKey("announce") || !torrentDict.ContainsKey("info"))
+				if (!torrentDict.ContainsKey("announce") || !torrentDict.ContainsKey("info"))
 				{
                     throw new FormatException("Missing required fields: announce or info");
 				}
-
-                string announce = (string)torrentDict["announce"];
+				// The "announce" field contains the URL of the tracker so we know where to connect to get peers
+				string announce = (string)torrentDict["announce"];
                 var info = (Dictionary<string, object>)torrentDict["info"];
 
                 if (!info.ContainsKey("name") || !info.ContainsKey("length") || !info.ContainsKey("piece length") || !info.ContainsKey("pieces"))
@@ -48,17 +44,32 @@ namespace TorrentClient
                 byte[] pieceHashes = Encoding.ASCII.GetBytes((string)info["pieces"]);
                 byte[] infoHash = parser.ComputeInfoHash();
 
-                var torrent = new Torrent(announce, fileName, fileLength, pieceLength, pieceHashes, infoHash);
+				// Torrent object encapsulates the metadata and provides methods to interact with the torrent
+				var torrent = new Torrent(announce, fileName, fileLength, pieceLength, pieceHashes, infoHash);
                 torrent.PrintMetadata();
 
 
-                // Contact tracker to get the peers
-                var trackerClient = new TrackerClient();
-                var peers = await trackerClient.GetPeers(torrent);
+				// Contact tracker to get the peers, this class comes with HTTP client to send requests to the tracker URL and get the list of peers
+				var trackerClient = new TrackerClient();
+				// List of tuples containing IP and port of each peer
+				List<(string ip, int port)> peers = await trackerClient.GetPeers(torrent);
 				Console.WriteLine("\nPeers:");
 				foreach (var peer in peers)
 				{
 					Console.WriteLine($"  {peer.ip}:{peer.port}");
+				}
+
+				// Connect to the first peer using the PeerClient class and initiate a handshake
+				if (peers.Count > 0)
+				{
+					var peerClient = new PeerClient(trackerClient.peerId);
+					// We taking only the first peer from the list for simplicity. Will change later to connect to multiple peers
+					var (ip, port, peerId) = await peerClient.ConnectAndHandshake(torrent, peers[0].ip, peers[0].port);
+					Console.WriteLine($"\nHandshake successful with peer {ip}:{port}, Peer ID: {peerId}.");
+				}
+				else
+				{
+					Console.WriteLine("\nNo peers available for handshake.");
 				}
 			}
 			catch (Exception ex)

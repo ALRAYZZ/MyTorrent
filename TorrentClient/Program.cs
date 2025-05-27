@@ -1,4 +1,5 @@
 ﻿using System.Text;
+using TorrentClient.FileManagement;
 using TorrentClient.src.Models;
 using TorrentClient.src.Networking;
 using TorrentClient.src.Parsing;
@@ -41,8 +42,10 @@ namespace TorrentClient
 				string fileName = (string)info["name"];
 				long fileLength = (long)info["length"];
 				int pieceLength = (int)(long)info["piece length"];
-                byte[] pieceHashes = Encoding.ASCII.GetBytes((string)info["pieces"]);
-                byte[] infoHash = parser.ComputeInfoHash();
+				// The "pieces" field contains the SHA-1 hashes of each piece of the file, encoded as a string
+				// We will use this to verify the integrity of the pieces we download doing a check for each piece
+				byte[] pieceHashes = Encoding.ASCII.GetBytes((string)info["pieces"]); 
+				byte[] infoHash = parser.ComputeInfoHash();
 
 				// Torrent object encapsulates the metadata and provides methods to interact with the torrent
 				var torrent = new Torrent(announce, fileName, fileLength, pieceLength, pieceHashes, infoHash);
@@ -51,6 +54,7 @@ namespace TorrentClient
 
 				// Contact tracker to get the peers, this class comes with HTTP client to send requests to the tracker URL and get the list of peers
 				var trackerClient = new TrackerClient();
+
 				// List of tuples containing IP and port of each peer
 				List<(string ip, int port)> peers = await trackerClient.GetPeers(torrent);
 				Console.WriteLine("\nPeers:");
@@ -66,6 +70,15 @@ namespace TorrentClient
 					// We taking only the first peer from the list for simplicity. Will change later to connect to multiple peers
 					var (ip, port, peerId) = await peerClient.ConnectAndHandshake(torrent, peers[0].ip, peers[0].port);
 					Console.WriteLine($"\nHandshake successful with peer {ip}:{port}, Peer ID: {peerId}.");
+
+					// Download the first piece from the peer
+					byte[] pieceData = await peerClient.DownloadPiece(torrent, 0);
+					Console.WriteLine("\nDownloaded piece 0");
+
+					// Write and verify piece
+					var fileManager = new FileManager(torrent.FileName);
+					bool verified = fileManager.WriteAndVerifyPiece(torrent, 0, pieceData);
+					Console.WriteLine($"Piece 0 verification: {(verified ? "Success" : "Failed")}");
 				}
 				else
 				{

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
@@ -12,13 +13,31 @@ namespace TorrentClient.FileManagement
 	public class FileManager
 	{
 		private readonly string outputPath;
+		private readonly BitArray downloadedPieces; // Tracks downloaded pieces
 
-		public FileManager (string outputPath)
+
+		public FileManager (string outputPath, int pieceCount)
 		{
 			this.outputPath = outputPath ?? throw new ArgumentNullException(nameof(outputPath));
+			downloadedPieces = new BitArray(pieceCount, false); // Initialize with all pieces not downloaded
+																// BitArray allows us to store the downloaded state of each piece efficiently
+																// PieceCount is the total number of pieces in the torrent
+																// We creating a BitArray with the size of pieceCount and initializing all bits to false
+																// So every piece has its bool value
 		}
 
-		// Write a piece to disk and verify its SHA-1 hash
+		// Check if a piece has already been downloaded
+		public bool IsPieceDownloaded(int pieceIndex)
+		{
+			if (pieceIndex < 0 || pieceIndex >= downloadedPieces.Length)
+			{
+				throw new ArgumentException("Invalid piece index", nameof(pieceIndex));
+			}
+			return downloadedPieces[pieceIndex]; // Returns true if the piece is already downloaded
+												 // This is doing a check on the BitArray to see if the piece at the given index is true or false
+		}
+
+		// Write a piece to disk and verify its SHA-1 hash and mark it as downloaded
 		public bool WriteAndVerifyPiece(Torrent torrent, int pieceIndex, byte[] pieceData)
 		{
 			// Verify piece hash
@@ -27,15 +46,42 @@ namespace TorrentClient.FileManagement
 				return false; // Hash mismatch, piece is invalid
 			}
 
-			// Write piece to file
-			using (var stream = new FileStream(outputPath, FileMode.OpenOrCreate, FileAccess.Write))
-			{
-				// We put the "writting cursor" at the position of the piece we are writing
-				// So even if they are not in order, we can write them directly to the correct position using the piece index
-				stream.Seek(pieceIndex * (long)torrent.PieceLength, SeekOrigin.Begin);
-				stream.Write(pieceData, 0, pieceData.Length);
-			}
+			// Mark piece as downloaded
+			downloadedPieces[pieceIndex] = true; // Set the bit for this piece to true in the BitArray
 
+			// Calculate piece offset
+			long pieceOffset = pieceIndex * (long)torrent.PieceLength;
+			long pieceEnd = pieceOffset + pieceData.Length;
+
+			// Find files overlapping with the piece
+			long currentOffset = 0;
+			int dataOffset = 0;
+			foreach (var (path, length) in torrent.Files.Count > 0 ? torrent.Files : new[] { (torrent.Name, torrent.TotalLength) })
+			{
+				long fileStart = currentOffset;
+				long fileEnd = currentOffset + length;
+
+				// Check if the piece overlaps with the file
+				if (pieceOffset < fileEnd && pieceEnd > fileStart)
+				{
+					// Calculate the portion of the peiece for this file
+					long writeStart = Math.Max(pieceOffset, fileStart) - fileStart; // Offset within the file
+					long writeEnd = Math.Min(pieceEnd, fileEnd) - fileStart; // End offset within the file
+					int writeLength = (int)(writeEnd - writeStart);
+
+					// Create directory and write to file
+					string fullPath = Path.Combine(outputPath, path);
+					Directory.CreateDirectory(Path.GetDirectoryName(fullPath));
+					using (var stream = new FileStream(fullPath, FileMode.OpenOrCreate, FileAccess.Write))
+					{
+						// Move the cursor to the correct position in the file
+						stream.Seek(pieceOffset + fileStart, SeekOrigin.Begin);
+						// Write the piece data to the file
+						stream.Write(pieceData, dataOffset + (int)writeStart, writeLength);
+					}
+				}
+				currentOffset += length; // Move to the next file's start position
+			}
 			return true; // Piece written successfully
 		}
 

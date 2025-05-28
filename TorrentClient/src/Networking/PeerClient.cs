@@ -107,6 +107,31 @@ namespace TorrentClient.src.Networking
 			return pieceData; // Return the downloaded piece data
 		}
 
+		// Download multiple pieces from the peer
+		public async Task<List<(int index, byte[] data)>> DownloadPieces(Torrent torrent, IEnumerable<int> pieceIndices)
+		{
+			// List storing the index and data of each downloaded piece
+			var results = new List<(int index, byte[] data)>();
+
+			foreach (int pieceIndex in pieceIndices)
+			{
+				if (pieceIndex < 0 || pieceIndex >= torrent.PieceHashes.Length / 20)
+				{
+					continue; // Skip invalid piece indices
+				}
+				try
+				{
+					byte[] pieceData = await DownloadPiece(torrent, pieceIndex); // Reusing the DownloadPiece method to download each piece
+					results.Add((pieceIndex, pieceData)); // Add the downloaded piece to the results
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"Failed to download piece {pieceIndex}: {ex.Message}");
+				}
+			}
+			return results; // Return the list of downloaded pieces
+		}
+
 		// Send a BitTorrent message: <length><id><payload>
 		private async Task SendMessage(byte id, byte[] payload)
 		{

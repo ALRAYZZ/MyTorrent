@@ -27,7 +27,7 @@ namespace TorrentClient.src.Networking
 			var random = new Random();
 			var bytes = new byte[12];
 			random.NextBytes(bytes);
-			return $"-MT0001-{ Convert.ToBase64String(bytes).Substring(0, 12) }";
+			return $"-MT0001-" + BitConverter.ToString(bytes).Replace("-", "").Substring(0, 12);
 		}
 
 		// Send HTTP GET request to tracker and return list of peers
@@ -38,13 +38,13 @@ namespace TorrentClient.src.Networking
 			// Here we building the GET request query string based on the Bittorrent protocol specifications
 			var query = new StringBuilder();
 			query.Append($"{torrent.Announce}?");
-			query.Append($"info_hash={Uri.EscapeDataString(Encoding.ASCII.GetString(torrent.InfoHash))}&");
+			query.Append($"info_hash={UrlEncode(torrent.InfoHash)}&");
 			query.Append($"peer_id={Uri.EscapeDataString(peerId)}&");
 			query.Append($"port=6881&"); // Default port for BitTorrent
 			query.Append($"uploaded=0&");
 			query.Append($"downloaded=0&");
-			query.Append($"left={torrent.FileLength}");
-			query.Append($"event=started&");
+			query.Append($"left={torrent.TotalLength}&");
+			query.Append($"event=started");
 
 			// Send GET request with the constructed query string
 			HttpResponseMessage response = await httpClient.GetAsync(query.ToString());
@@ -59,27 +59,58 @@ namespace TorrentClient.src.Networking
 				throw new FormatException("Invalid tracker response: missing 'peers' key");
 			}
 
-			// Extract peers from response we got out of the tracker based on our string query
-			// We need to get the bytes of the "peers" field, which is a string of IP addresses and ports
-			// Because the peers are represented as a binary string in the response, we need to decode it
-			// If we got just the string we would get gibberish, so we need to convert it to bytes first
-			// So its like having a byte array containing all the response data and then inside the "peers" key we have a string of bytes
-			var peersData = Encoding.ASCII.GetBytes((string)responseDict["peers"]);
 			// Each peer is represented by 6 bytes: 4 for IP and 2 for port
 			var peers = new List<(string ip, int port)>();
-			for (int i = 0; i < peersData.Length; i += 6)
-			{
-				if (i + 6 > peersData.Length)
-				{
-					throw new FormatException("Invalid peer data length");
-				}
-				string ip = $"{peersData[i]}.{peersData[i + 1]}.{peersData[i + 2]}.{peersData[i + 3]}";
+			var peersObj = responseDict["peers"];
 
-				int port = (peersData[i + 4] << 8) | peersData[i + 5]; // Combine high and low bytes to get port number
-				peers.Add((ip, port));
+			if (peersObj is string peersString)
+			{
+				var peersData = Encoding.ASCII.GetBytes(peersString);
+
+				for (int i = 0; i < peersData.Length; i += 6)
+				{
+					if (i + 6 > peersData.Length)
+					{
+						throw new FormatException("Invalid peer data length");
+					}
+					string ip = $"{peersData[i]}.{peersData[i + 1]}.{peersData[i + 2]}.{peersData[i + 3]}";
+					int port = (peersData[i + 4] << 8) | peersData[i + 5]; // Combine high and low bytes to get port number
+					peers.Add((ip, port));
+				}
+			}
+			else if (peersObj is List<object> peersList)
+			{
+				foreach (var peerEntry in peersList)
+				{
+					if (peerEntry is Dictionary<string, object> peerDict &&
+						peerDict.TryGetValue("ip", out var ipObj) &&
+						peerDict.TryGetValue("port", out var portObj))
+					{
+						string ip = ipObj as string;
+						int port = Convert.ToInt32(portObj);
+						peers.Add((ip, port));
+					}
+				}
+			}
+			else
+			{
+				throw new FormatException("Unkown peers format in tracker response");
 			}
 
 			return peers;
+		}
+
+		// Helper to precent-encode a byte array for BitTorrent protocol
+		// On the HTTP GET when contacting the Tracker and passing Info_hash we need to pass safely special characters
+		private static string UrlEncode(byte[] bytes)
+		{
+			var sb = new StringBuilder();
+			foreach (byte b in bytes)
+			{
+				sb.Append('%');
+				sb.Append(b.ToString("X2")); // Convert byte to hex and append
+			}
+			return sb.ToString();
 		}
 	}
 }

@@ -116,21 +116,22 @@ namespace TorrentClient
 				}
 
 				// Connect to the first peer using the PeerClient class and initiate a handshake
-				if (ipv4Peers.Count > 0)
+				if (peers.Count > 0)
 				{
-					var peerManager = new PeerManager(trackerClient.peerId, maxPeers: 10);
-					await peerManager.ConnectToPeers(torrent, ipv4Peers); // Connect to the peers obtained from the tracker
-
-					Console.WriteLine($"\nConnected to {peerManager.ActivePeerCount} peers.");
+					var peerClient = new PeerClient(trackerClient.peerId);
+					// We taking only the first peer from the list for simplicity. Will change later to connect to multiple peers
+					var (ip, port, peerId) = await peerClient.ConnectAndHandshake(torrent, peers[0].ip, peers[0].port);
+					Console.WriteLine($"\nHandshake successful with peer {ip}:{port}, Peer ID: {peerId}.");
 
 					// Download the first 5 pieces from the peer
 					int pieceCount = torrent.PieceHashes.Length / 20; // Each piece hash is 20 bytes
 																	  // So we divide the total length of the piece hashes by 20 to get the number of pieces
 
 					// We doing some match check to see if 5 or less pieces exist and then creating a range from 0 to the num we find as minimum
-					var fileManager = new FileManager(torrent.Name, pieceCount, torrent); // Create an instance of the FileManager to handle file operations
-					var pieces = await peerManager.DownloadAllPieces(torrent, fileManager); // Download all pieces using the rarest-first algorithm
-
+					var pieceIndices = Enumerable.Range(0, Math.Min(5, pieceCount)); // Download only the first 5 pieces for testing
+					var fileManager = new FileManager(torrent.Name, pieceCount); // Create an instance of the FileManager to handle file operations
+					var pieces = await peerClient.DownloadPieces(torrent, pieceIndices); // Download the pieces from the peer
+											 
 					// Write and verify pieces
 					foreach (var (index, data) in pieces)
 					{
@@ -144,17 +145,7 @@ namespace TorrentClient
 							Console.WriteLine($"Piece {index} already downloaded, skipping");
 						}
 					}
-
-					if (fileManager.IsComplete())
-					{
-						Console.WriteLine("\nDownload complete! All pieces downloaded and verified!");
-					}
-					else
-					{
-						Console.WriteLine($"\nDownload incomplete. {fileManager.GetProgress():F2}% completed.");
-					}
 				}
-				
 				else
 				{
 					Console.WriteLine("\nNo peers available for handshake.");

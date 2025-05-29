@@ -1,12 +1,9 @@
 ﻿using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Sockets;
-using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
-using TorrentClient.FileManagement;
 using TorrentClient.src.Models;
 
 namespace TorrentClient.src.Networking
@@ -16,9 +13,6 @@ namespace TorrentClient.src.Networking
 		private readonly string peerId;
 		private TcpClient tcpClient;
 		private NetworkStream stream;
-		private readonly TimeSpan timeout = TimeSpan.FromSeconds(30); // Timeout for peer responses
-		private BitArray peerBitfield; // Bitfield to track pieces available from the peer
-		private bool isUnchoked; // Flag to check if we are unchoked by the peer
 
 		public PeerClient(string peerId)
 		{
@@ -27,7 +21,6 @@ namespace TorrentClient.src.Networking
 			{
 				throw new ArgumentException("Peer ID must be exactly 20 bytes long.", nameof(peerId));
 			}
-			isUnchoked = false; // Initially, we are not unchoked
 		}
 
 		// Connect to a peer using the peer ID and initiate a handshake
@@ -71,45 +64,10 @@ namespace TorrentClient.src.Networking
 			Array.Copy(response, 48, responsePeerId, 0, 20);
 			string peerIdStr = Encoding.ASCII.GetString(responsePeerId);
 
-			await ReceiveBitfield(torrent); // Receive and parse the bitfield message from the peer
-
 			return (ip, port, peerIdStr);
 		}
 
-		// Receive and parse bitfield message from a peer
-		private async Task ReceiveBitfield(Torrent torrent)
-		{
-			int pieceCount = torrent.PieceHashes.Length / 20; // Each piece hash is 20 bytes
-			peerBitfield = new BitArray(pieceCount, false); // Initialize bitfield with all pieces not available
-
-			// Expect bitfield message (ID 5) after handshake
-			var (messageId, payload) = await ReceiveMessageWithTimeout();
-			if (messageId != 5)
-			{
-				Console.WriteLine($"Expected bitfield message (ID 5), received ID {messageId}");
-				return;
-			}
-
-			// Bitfield payload is a bit array where each bit represents a piece
-			if (payload.Length < (pieceCount + 7) / 8) // Ensure payload is long enough to cover all pieces
-			{
-				throw new FormatException("Bitfield payload is too short.");
-			}
-
-			peerBitfield = new BitArray(payload);
-			if (peerBitfield.Length < pieceCount)
-			{
-				throw new FormatException("Bitfield length does not match expected piece count.");
-			}
-			peerBitfield.Length = pieceCount; // Set the length to the number of pieces
-		}
-
-		public BitArray GetBitfield()
-		{
-			return peerBitfield;
-		}
-
-		// Download the first piece from the peer (Not in use)
+		// Download the first piece from the peer
 		public async Task<byte[]> DownloadPiece(Torrent torrent, int pieceIndex)
 		{
 			// Send interested message to the peer
@@ -150,125 +108,21 @@ namespace TorrentClient.src.Networking
 		}
 
 		// Download multiple pieces from the peer
-		public async Task<List<(int index, byte[] data)>> DownloadPieces(Torrent torrent, IEnumerable<int> pieceIndices, FileManager fileManager)
+		public async Task<List<(int index, byte[] data)>> DownloadPieces(Torrent torrent, IEnumerable<int> pieceIndices)
 		{
-			var results = new List<(int index, byte[] data)>(); // Holds the downloaded pieces as tuples of (index, data)
-			const int maxPendingRequests = 10; // Maximum number of piece requests to pipeline at once
-			var pendingRequests = new List<int>(); // Tracks pieces asked but not yet received
+			// List storing the index and data of each downloaded piece
+			var results = new List<(int index, byte[] data)>();
 
-			// Filter pieceIndice to only those the peer has and not yet downloaded
-			var availablePieces = pieceIndices
-				.Where(i => i>= 0 && i < peerBitfield.Length && peerBitfield[i] && !fileManager.IsPieceDownloaded(i))
-				.OrderBy(i => i) // Sort indices for consistent order
-				.ToList();
-
-			if (!availablePieces.Any())
+			foreach (int pieceIndex in pieceIndices)
 			{
-				Console.WriteLine("No piece available from this peer that haven't been downloaded.");
-				return results; // If no pieces are available, return empty results
-			}
-			// Send interested message to the peer
-			await SendMessage(2, null); // ID 2: Interested message
-
-
-			foreach (int pieceIndex in availablePieces)
-			{
+				if (pieceIndex < 0 || pieceIndex >= torrent.PieceHashes.Length / 20)
+				{
+					continue; // Skip invalid piece indices
+				}
 				try
 				{
-					// Calculate piece size (last piece may be smaller)
-					// Making sure we are not going out of bounds of the torrent.PieceHashes array
-					long pieceSize = pieceIndex == (torrent.PieceHashes.Length / 20 - 1)
-						? torrent.TotalLength % torrent.PieceLength
-						: torrent.PieceLength;
-					if (pieceSize == 0)
-					{
-						pieceSize = torrent.PieceLength; // Ensure piece size is at least the piece length
-					}
-
-					// Handling choke/unchoke messages
-					while (!isUnchoked) // While we are not unchoked, we keep waiting for the unchoke message
-					{
-						var (messageId, _) = await ReceiveMessageWithTimeout();
-						if (messageId == 0) // Choke
-						{
-							isUnchoked = false;
-						}
-						else if (messageId == 1) // Unchoke
-						{
-							isUnchoked = true;
-						}
-					}
-
-					// Pipeline request (send up to maxPendingRequests)
-					// If we have less than maxPendingRequests, we send a request for the piece
-					if (pendingRequests.Count < maxPendingRequests)
-					{
-						byte[] requestPayload = new byte[12];
-						BitConverter.GetBytes(pieceIndex).CopyTo(requestPayload, 0); // Piece index
-						BitConverter.GetBytes(0).CopyTo(requestPayload, 4); // Offset
-						BitConverter.GetBytes((int)pieceSize).CopyTo(requestPayload, 8); // Length
-						await SendMessage(6, requestPayload); // ID 6: Request message. Here we ar sending the request
-						pendingRequests.Add(pieceIndex); // We fill the list of pending requests with the piece index we just requested
-														 // We iterate untill we reach the maxPendingRequests limit
-					}
-
-					// Process responses if max pending requests reached
-					// Once we filled the pending requests list, we start processing the responses
-					while (pendingRequests.Any())
-					{
-						var (messageId, payload) = await ReceiveMessageWithTimeout(); // Here we are waiting and receiving the actual data from the peer
-						if (messageId == 7) // Piece
-						{
-							int index = BitConverter.ToInt32(payload, 0);
-							int begin = BitConverter.ToInt32(payload, 4);
-
-							// Check if the piece index and offset match the request
-							if (!pendingRequests.Contains(index) || begin != 0)
-							{
-								Console.WriteLine($"Unexpected piece index {index} or offset {begin}");
-								continue;
-							}
-
-							// If the piece index and offset match, we proceed to process the piece data
-							long expectedSize = index == (torrent.PieceHashes.Length / 20 - 1)
-								? torrent.TotalLength % torrent.PieceLength
-								: torrent.PieceLength;
-							if (expectedSize == 0)
-							{
-								expectedSize = torrent.PieceLength; // Ensure piece size is at least the piece length
-							}
-
-							// Checks passed, we can now extract the piece data from the payload and add it to the results
-							// Also we remove the piece index from the pending requests list
-							byte[] pieceData = new byte[expectedSize];
-							Array.Copy(payload, 8, pieceData, 0, payload.Length - 8); // Copy piece data from payload
-							results.Add((index, pieceData)); // Add downloaded piece to results
-							pendingRequests.Remove(index); // Remove from pending requests
-
-							// Send new requests if more pieces remain
-							if (pendingRequests.Count < maxPendingRequests)
-							{
-								var nextPiece = pieceIndices.FirstOrDefault(i => !pendingRequests.Contains(i) &&
-								!results.Any(r => r.index == i));
-								if (nextPiece >= 0 && nextPiece < torrent.PieceHashes.Length / 20)
-								{
-									byte[] newRequest = new byte[12];
-									BitConverter.GetBytes(nextPiece).CopyTo(newRequest, 0); // Piece index
-									BitConverter.GetBytes(0).CopyTo(newRequest, 4); // Offset
-									long nextPieceSize = nextPiece == (torrent.PieceHashes.Length / 20 - 1)
-										? torrent.TotalLength % torrent.PieceLength
-										: torrent.PieceLength;
-									if (nextPieceSize == 0)
-									{
-										nextPieceSize = torrent.PieceLength; // Ensure piece size is at least the piece length
-									}
-									BitConverter.GetBytes((int)nextPieceSize).CopyTo(newRequest, 8); // Length
-									await SendMessage(6, newRequest); // ID 6: Request message
-									pendingRequests.Add(nextPiece); // Add to pending requests
-								}
-							}
-						}
-					}
+					byte[] pieceData = await DownloadPiece(torrent, pieceIndex); // Reusing the DownloadPiece method to download each piece
+					results.Add((pieceIndex, pieceData)); // Add the downloaded piece to the results
 				}
 				catch (Exception ex)
 				{
@@ -293,17 +147,17 @@ namespace TorrentClient.src.Networking
 		}
 
 		// Receive a BitTorrent message
-		private async Task<(byte id, byte[] payload)> ReceiveMessage(CancellationToken cancellationToken = default)
+		private async Task<(byte id, byte[] payload)> ReceiveMessage()
 		{
 			byte[] lengthBytes = new byte[4];
-			await stream.ReadAsync(lengthBytes, 0, 4, cancellationToken); // Read the first 4 bytes for length
+			await stream.ReadAsync(lengthBytes, 0, 4); // Read the first 4 bytes for length
 			int length = BitConverter.ToInt32(lengthBytes, 0); // Get the length of the message
 			if (length == 0)
 			{
 				return (0, null); // Keep-alive message, no payload
 			}
 			byte[] message = new byte[length];
-			await stream.ReadAsync(message, 0, length, cancellationToken); // Read the rest of the message
+			await stream.ReadAsync(message, 0, length); // Read the rest of the message
 			byte id = message[0]; // The first byte is the message ID
 			byte[] payload = length > 1 ? new byte[length - 1] : null; // The rest is the payload
 			if (payload != null)
@@ -311,18 +165,6 @@ namespace TorrentClient.src.Networking
 				Array.Copy(message, 1, payload, 0, length - 1); // Copy the payload from the message
 			}
 			return (id, payload); // Return the message ID and payload
-		}
-		private async Task<(byte id, byte[] payload)> ReceiveMessageWithTimeout()
-		{
-			using var cts = new CancellationTokenSource(timeout);
-			try
-			{
-				return await ReceiveMessage(cts.Token);
-			}
-			catch (OperationCanceledException)
-			{
-				throw new TimeoutException("Timed out waiting for peer response.");
-			}
 		}
 
 		// Build handshake message according to the BitTorrent protocol: <pstrlen><pstr><reserved><info_hash><peer_id>
